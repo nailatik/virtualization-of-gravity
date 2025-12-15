@@ -1,5 +1,5 @@
 import { useMemo, useRef } from 'react';
-import { Canvas, useThree } from '@react-three/fiber';
+import { Canvas } from '@react-three/fiber';
 import { OrbitControls, Stars as BgStars, Line, Html } from '@react-three/drei';
 import * as THREE from 'three';
 import type { Star, GraphLink } from '../models/Star';
@@ -54,22 +54,24 @@ function EdgeLine({
 }
 
 function SystemGroup({ children }: { children: React.ReactNode }) {
-  // наклоняем плоскость системы (для перспективы)
   return <group rotation={[-Math.PI / 4.2, 0, 0]}>{children}</group>;
 }
 
-
-// Перетаскивание по плоскости Z=0 (в координатах SystemGroup до поворота)
+// Drag по локальной плоскости z=0 (в координатах SystemGroup)
 function DraggableStar({
   star,
+  selected,
   onMove,
   onDragStart,
-  onDragEnd
+  onDragEnd,
+  onSelect
 }: {
   star: Star;
+  selected: boolean;
   onMove: (id: string, x: number, y: number) => void;
   onDragStart: () => void;
   onDragEnd: () => void;
+  onSelect: (id: string) => void;
 }) {
   const radius = Math.max(2, star.mass / 10);
   const color = star.color ?? '#ffffff';
@@ -77,7 +79,6 @@ function DraggableStar({
   const sphereGeo = useMemo(() => new THREE.SphereGeometry(radius, 48, 48), [radius]);
   const wireGeo = useMemo(() => new THREE.WireframeGeometry(sphereGeo), [sphereGeo]);
 
-  // Плоскость в локальных координатах SystemGroup: z=0
   const dragPlane = useMemo(() => new THREE.Plane(new THREE.Vector3(0, 0, 1), 0), []);
   const dragPoint = useMemo(() => new THREE.Vector3(), []);
   const draggingRef = useRef(false);
@@ -88,6 +89,10 @@ function DraggableStar({
         geometry={sphereGeo}
         castShadow
         receiveShadow
+        onClick={(e) => {
+          e.stopPropagation();
+          onSelect(star.id);
+        }}
         onPointerDown={(e) => {
           e.stopPropagation();
           draggingRef.current = true;
@@ -103,8 +108,6 @@ function DraggableStar({
         onPointerMove={(e) => {
           if (!draggingRef.current) return;
           e.stopPropagation();
-
-          // Важно: intersectPlane работает с лучом из r3f event
           if (e.ray.intersectPlane(dragPlane, dragPoint)) {
             onMove(star.id, dragPoint.x, dragPoint.y);
           }
@@ -114,16 +117,16 @@ function DraggableStar({
           color={color}
           roughness={0.25}
           metalness={0.05}
-          emissive={color}
-          emissiveIntensity={0.15}
+          emissive={selected ? '#ffffff' : color}
+          emissiveIntensity={selected ? 0.35 : 0.15}
         />
       </mesh>
 
       <lineSegments geometry={wireGeo}>
-        <lineBasicMaterial color="#ffffff" transparent opacity={0.25} />
+        <lineBasicMaterial color="#ffffff" transparent opacity={selected ? 0.45 : 0.25} />
       </lineSegments>
 
-      {/* Название над объектом (DOM, всегда читаемо) */}
+      {/* Название */}
       <Html position={[0, radius + 10, 0]} center distanceFactor={12}>
         <div
           style={{
@@ -152,7 +155,9 @@ export default function StarScene({
   controlsEnabled,
   onDragStart,
   onDragEnd,
-  onStarMove
+  onStarMove,
+  onStarSelect,
+  selectedStarId
 }: {
   stars: Star[];
   links: GraphLink[];
@@ -163,6 +168,8 @@ export default function StarScene({
   onDragStart: () => void;
   onDragEnd: () => void;
   onStarMove: (id: string, x: number, y: number) => void;
+  onStarSelect: (id: string | null) => void;
+  selectedStarId: string | null;
 }) {
   const sun = stars.find((s) => s.id === sunId);
 
@@ -172,9 +179,8 @@ export default function StarScene({
       camera={{ position: [260, 140, 420], fov: 50, near: 0.1, far: 5000 }}
       style={{ width: '100%', height: '100%' }}
       gl={{ antialias: true, alpha: true }}
+      onPointerMissed={() => onStarSelect(null)}
     >
-      
-
       <BgStars radius={2000} depth={60} count={4000} factor={2} fade speed={0.5} />
 
       <ambientLight intensity={0.25} />
@@ -202,7 +208,7 @@ export default function StarScene({
       />
 
       <SystemGroup>
-        {/* Орбиты вокруг Солнца */}
+        {/* Орбиты */}
         {showOrbits && sun &&
           stars
             .filter((s) => s.id !== sun.id)
@@ -226,14 +232,16 @@ export default function StarScene({
             return <EdgeLine key={`edge-${idx}`} a={{ x: a.x, y: a.y }} b={{ x: b.x, y: b.y }} />;
           })}
 
-        {/* Звёзды + Drag + Названия */}
+        {/* Звёзды */}
         {stars.map((s) => (
           <DraggableStar
             key={s.id}
             star={s}
+            selected={selectedStarId === s.id}
             onMove={onStarMove}
             onDragStart={onDragStart}
             onDragEnd={onDragEnd}
+            onSelect={(id) => onStarSelect(id)}
           />
         ))}
       </SystemGroup>
