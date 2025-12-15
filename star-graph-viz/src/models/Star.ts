@@ -4,8 +4,8 @@ export interface Star {
   mass: number;
   x: number;
   y: number;
-  vx?: number;
-  vy?: number;
+  vx: number;
+  vy: number;
   color?: string;
 }
 

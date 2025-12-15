@@ -127,11 +127,11 @@ function DraggableStar({
       </lineSegments>
 
       {/* Название */}
-      <Html position={[0, radius + 10, 0]} center distanceFactor={12}>
+      <Html position={[0, radius + 10, 0]} center transform sprite>
         <div
           style={{
             color: 'white',
-            fontSize: '14px',
+            fontSize: '240px',
             fontWeight: 700,
             textShadow: '0 2px 8px rgba(0,0,0,0.8)',
             whiteSpace: 'nowrap',
@@ -142,6 +142,7 @@ function DraggableStar({
           {star.name}
         </div>
       </Html>
+
     </group>
   );
 }

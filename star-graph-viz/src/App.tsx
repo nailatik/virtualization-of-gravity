@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import type { Star, GraphLink } from './models/Star';
 import { generateInitialGraph } from './utils/generateInitialGraph';
 import StarScene from './components/StarScene';
+import { stepNBodyLeapfrog, setCircularOrbitVelocity } from './utils/nbody2d';
 import {
   Box,
   Drawer,
@@ -69,7 +70,6 @@ function pickSpawnPositionOnNewOrbit(stars: Star[]) {
   const baseR = 140;
   const stepR = 110;
 
-  // max радиус
   let maxR = 0;
   for (const s of stars) {
     if (s.id === SUN_ID) continue;
@@ -102,7 +102,6 @@ function computeMinR(stars: Star[], sun: Star) {
 }
 
 function omegaForRadius(r: number, minR0: number) {
-  // Kepler-like: omega ~ (1/r)^(3/2), где minR0 — фиксированная калибровка
   return baseOmega * Math.pow(minR0 / Math.max(1, r), 1.5);
 }
 
@@ -129,8 +128,12 @@ function buildOrbitState(stars: Star[], minR0: number): OrbitState {
 }
 
 export default function App() {
+  // ---------- init ----------
   const initial = useMemo(() => layoutInitialOnOrbits(generateInitialGraph()), []);
   const [graph, setGraph] = useState<GraphState>(initial);
+
+  // mode switch
+  const [physicsMode, setPhysicsMode] = useState(false);
 
   // drag flag (so tick doesn't overwrite drag)
   const isDraggingRef = useRef(false);
@@ -144,29 +147,101 @@ export default function App() {
 
   const [isSimRunning, setIsSimRunning] = useState(true);
   const [speed, setSpeed] = useState(1);
-
   const sliderValue = Math.log10(speed);
 
-  // fixed calibration radius (does NOT jump when you move the closest planet)
+  // orbit calibration (fixed)
   const sun0 = getSun(initial.stars);
   const minR0Init = sun0 ? computeMinR(initial.stars, sun0) : 200;
-
   const orbitCalibRef = useRef<{ minR0: number }>({ minR0: minR0Init });
   const orbitRef = useRef<OrbitState>(buildOrbitState(initial.stars, minR0Init));
 
+  // ---------- tips (random once per minute; close button disables forever) ----------
+  const TIPS = useMemo(
+    () => [
+      'Подсказка: в режиме физики добавление планеты близко к Солнцу часто разрушает систему.',
+      'Подсказка: увеличь массу планеты и посмотри, как меняются орбиты других.',
+      'Подсказка: при сближении тела сливаются — масса суммируется.',
+      'Подсказка: скорость симуляции лучше повышать постепенно.'
+    ],
+    []
+  );
+
+  const [tipText, setTipText] = useState<string | null>(null);
+  const [tipsDismissed, setTipsDismissed] = useState(false);
+  const hideTipTimeoutRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    if (tipsDismissed) return;
+  
+    const showRandomTip = () => {
+      const t = TIPS[Math.floor(Math.random() * TIPS.length)];
+      setTipText(t);
+  
+      if (hideTipTimeoutRef.current) window.clearTimeout(hideTipTimeoutRef.current);
+      hideTipTimeoutRef.current = window.setTimeout(() => setTipText(null), 10_000);
+    };
+  
+    const firstId = window.setTimeout(showRandomTip, 3000);
+  
+    const id = window.setInterval(showRandomTip, 60_000);
+  
+    return () => {
+      window.clearInterval(id);
+      window.clearTimeout(firstId);
+      if (hideTipTimeoutRef.current) window.clearTimeout(hideTipTimeoutRef.current);
+      hideTipTimeoutRef.current = null;
+    };
+  }, [tipsDismissed, TIPS]);
+  
+
+  const dismissTipsForever = () => {
+    setTipText(null);
+    setTipsDismissed(true);
+    if (hideTipTimeoutRef.current) window.clearTimeout(hideTipTimeoutRef.current);
+    hideTipTimeoutRef.current = null;
+  };
+
+  // physics params
+  const physicsRef = useRef({
+    G: 2000,
+    eps: 20,
+    dt: 1 / 120,
+    mergeDist: 18,
+    lockSunId: SUN_ID
+  });
+
+  // RAF
   const rafRef = useRef<number | null>(null);
   const lastTRef = useRef<number>(performance.now());
 
-  // rebuild only when number of stars changes (add/reset)
+  // rebuild orbit state only when number of stars changes (add/reset)
   useEffect(() => {
     const sun = getSun(graph.stars);
     if (!sun) return;
-
     orbitCalibRef.current.minR0 = computeMinR(graph.stars, sun);
     orbitRef.current = buildOrbitState(graph.stars, orbitCalibRef.current.minR0);
   }, [graph.stars.length]);
 
-  // animation loop (RAF)
+  // when physics mode toggled ON: initialize velocities to circular orbits
+  useEffect(() => {
+    if (!physicsMode) return;
+
+    setGraph((prev) => {
+      const sun = getSun(prev.stars);
+      if (!sun) return prev;
+
+      const G = physicsRef.current.G;
+      const stars = prev.stars.map((s) => {
+        if (s.id === SUN_ID) return { ...s, vx: 0, vy: 0 };
+        const v = setCircularOrbitVelocity(s, sun, G);
+        return { ...s, ...v };
+      });
+
+      return { ...prev, stars };
+    });
+  }, [physicsMode]);
+
+  // animation loop (single RAF, two modes)
   useEffect(() => {
     if (!isSimRunning) {
       if (rafRef.current) cancelAnimationFrame(rafRef.current);
@@ -176,34 +251,49 @@ export default function App() {
 
     const tick = () => {
       const now = performance.now();
-      const dt = Math.min(0.05, (now - lastTRef.current) / 1000);
+      const realDt = Math.min(0.05, (now - lastTRef.current) / 1000);
       lastTRef.current = now;
 
       if (!isDraggingRef.current) {
-        setGraph((prev) => {
-          const sun2 = getSun(prev.stars);
-          if (!sun2) return prev;
+        if (physicsMode) {
+          // N-body
+          setGraph((prev) => {
+            const substeps = Math.max(1, Math.ceil(speed));
+            const dt = (physicsRef.current.dt * speed) / substeps;
 
-          const orbit = orbitRef.current;
-
-          const nextStars = prev.stars.map((s) => {
-            if (s.id === SUN_ID) return s;
-
-            const r = orbit.radius.get(s.id) ?? dist(s, sun2);
-            const th = orbit.theta.get(s.id) ?? Math.atan2(s.y - sun2.y, s.x - sun2.x);
-            const w = orbit.omega.get(s.id) ?? (Math.PI * 2) / 10;
-
-            const newTh = th + w * dt * speed;
-
-            orbit.theta.set(s.id, newTh);
-            orbit.radius.set(s.id, r);
-            orbit.omega.set(s.id, w);
-
-            return { ...s, x: sun2.x + Math.cos(newTh) * r, y: sun2.y + Math.sin(newTh) * r };
+            let stars = prev.stars;
+            for (let i = 0; i < substeps; i++) {
+              stars = stepNBodyLeapfrog(stars, { ...physicsRef.current, dt });
+            }
+            return { ...prev, stars };
           });
+        } else {
+          // Simple orbits
+          setGraph((prev) => {
+            const sun2 = getSun(prev.stars);
+            if (!sun2) return prev;
 
-          return { ...prev, stars: nextStars };
-        });
+            const orbit = orbitRef.current;
+
+            const nextStars = prev.stars.map((s) => {
+              if (s.id === SUN_ID) return s;
+
+              const r = orbit.radius.get(s.id) ?? dist(s, sun2);
+              const th = orbit.theta.get(s.id) ?? Math.atan2(s.y - sun2.y, s.x - sun2.x);
+              const w = orbit.omega.get(s.id) ?? (Math.PI * 2) / 10;
+
+              const newTh = th + w * realDt * speed;
+
+              orbit.theta.set(s.id, newTh);
+              orbit.radius.set(s.id, r);
+              orbit.omega.set(s.id, w);
+
+              return { ...s, x: sun2.x + Math.cos(newTh) * r, y: sun2.y + Math.sin(newTh) * r };
+            });
+
+            return { ...prev, stars: nextStars };
+          });
+        }
       }
 
       rafRef.current = requestAnimationFrame(tick);
@@ -216,8 +306,9 @@ export default function App() {
       if (rafRef.current) cancelAnimationFrame(rafRef.current);
       rafRef.current = null;
     };
-  }, [isSimRunning, speed]);
+  }, [isSimRunning, speed, physicsMode]);
 
+  // ---------- actions ----------
   const handleAddStar = () => {
     setGraph((prev) => {
       const sun = getSun(prev.stars);
@@ -232,8 +323,17 @@ export default function App() {
         mass: Math.random() * 50 + 30,
         x: spawn.x,
         y: spawn.y,
+        vx: 0,
+        vy: 0,
         color: starColors[Math.floor(Math.random() * starColors.length)]
       };
+
+      // if physics mode: spawn with circular orbit velocity
+      if (physicsMode) {
+        const v = setCircularOrbitVelocity(newStar, sun, physicsRef.current.G);
+        newStar.vx = v.vx;
+        newStar.vy = v.vy;
+      }
 
       const newLink: GraphLink = { source: SUN_ID, target: newStar.id, distance: spawn.r };
       const updatedLinks = hasLink(prev.links, newLink.source, newLink.target)
@@ -242,7 +342,7 @@ export default function App() {
 
       const nextStars = [...prev.stars, newStar];
 
-      // update calibration and rebuild orbit state (simple + reliable)
+      // update orbit mode cache too (so switching back works nicely)
       orbitCalibRef.current.minR0 = computeMinR(nextStars, sun);
       orbitRef.current = buildOrbitState(nextStars, orbitCalibRef.current.minR0);
 
@@ -267,6 +367,7 @@ export default function App() {
         stars: prev.stars.map((s) => (s.id === id ? { ...s, x, y } : s))
       };
 
+      // orbit cache update (only meaningful in orbit mode)
       const sun = getSun(next.stars);
       if (sun && id !== SUN_ID) {
         const r = dist({ x, y }, { x: sun.x, y: sun.y });
@@ -275,7 +376,6 @@ export default function App() {
         orbitRef.current.radius.set(id, r);
         orbitRef.current.theta.set(id, th);
 
-        // key fix: use fixed minR0 (doesn't change when "closest" changes)
         const minR0 = orbitCalibRef.current.minR0;
         orbitRef.current.omega.set(id, omegaForRadius(r, minR0));
       }
@@ -292,7 +392,7 @@ export default function App() {
     }));
   };
 
-  // ---------- UI styles (make text white) ----------
+  // ---------- UI styles (white) ----------
   const whiteTextFieldSx = {
     width: 180,
     '& .MuiInputLabel-root': { color: 'rgba(255,255,255,0.85)' },
@@ -311,8 +411,95 @@ export default function App() {
     '& .MuiSlider-valueLabel': { color: '#111' }
   };
 
+  // контакт (замени на свой)
+  const TELEGRAM_URL = 'https://t.me/nailatik';
+  const TELEGRAM_TEXT = '@nailatik';
+
   return (
     <Box sx={{ display: 'flex', height: '100vh', bgcolor: '#0B0D17', position: 'relative' }}>
+      {/* Mode switch (top-left) */}
+      <Paper
+        sx={{
+          position: 'absolute',
+          top: 12,
+          left: 12,
+          zIndex: 30,
+          bgcolor: 'rgba(15, 23, 42, 0.92)',
+          border: '1px solid rgba(255,255,255,0.12)',
+          color: '#fff',
+          p: 1.25
+        }}
+      >
+        <FormControlLabel
+          control={<Switch checked={physicsMode} onChange={(e) => setPhysicsMode(e.target.checked)} />}
+          label="Реалистичная физика (N-body)"
+        />
+      </Paper>
+
+      {/* Tips (left) */}
+      {!tipsDismissed && tipText && (
+        <Paper
+          sx={{
+            position: 'absolute',
+            top: 76,
+            left: 12,
+            zIndex: 30,
+            maxWidth: 380,
+            bgcolor: 'rgba(15, 23, 42, 0.92)',
+            border: '1px solid rgba(255,255,255,0.12)',
+            color: '#fff',
+            p: 1.5
+          }}
+        >
+          <Stack direction="row" justifyContent="space-between" spacing={2} alignItems="flex-start">
+            <Typography variant="body2" sx={{ color: '#fff', lineHeight: 1.35 }}>
+              {tipText}
+            </Typography>
+            <IconButton
+              size="small"
+              onClick={dismissTipsForever}
+              sx={{ color: '#fff', mt: -0.5, mr: -0.5 }}
+              aria-label="Закрыть подсказки"
+            >
+              <CloseIcon fontSize="small" />
+            </IconButton>
+          </Stack>
+          <Typography variant="caption" sx={{ color: 'rgba(255,255,255,0.75)' }}>
+            Нажми на крестик, чтобы отключить подсказки навсегда.
+          </Typography>
+        </Paper>
+      )}
+
+      {/* Contacts (bottom-right) */}
+      <Paper
+        sx={{
+          position: 'absolute',
+          right: 392,
+          bottom: 12,
+          zIndex: 40,
+          bgcolor: 'rgba(15, 23, 42, 0.92)',
+          border: '1px solid rgba(255,255,255,0.12)',
+          color: '#fff',
+          p: 1.25
+        }}
+      >
+        <Typography variant="caption" sx={{ opacity: 0.85, color: '#fff' }}>
+          Контакты
+        </Typography>
+        <Typography variant="body2" sx={{ color: '#fff' }}>
+          Telegram:{' '}
+          <a
+            href={TELEGRAM_URL}
+            target="_blank"
+            rel="noreferrer"
+            style={{ color: '#8ab4ff', textDecoration: 'none' }}
+          >
+            {TELEGRAM_TEXT}
+          </a>
+        </Typography>
+      </Paper>
+
+      {/* Selected star panel */}
       {selectedStar && (
         <Paper
           sx={{
@@ -378,6 +565,14 @@ export default function App() {
           onDragEnd={() => {
             setControlsEnabled(true);
             isDraggingRef.current = false;
+
+            // optional: after dragging in physics mode, stop the body to avoid "teleport impulse"
+            if (physicsMode && selectedStarId && selectedStarId !== SUN_ID) {
+              setGraph((prev) => ({
+                ...prev,
+                stars: prev.stars.map((s) => (s.id === selectedStarId ? { ...s, vx: 0, vy: 0 } : s))
+              }));
+            }
           }}
           onStarMove={handleStarMove}
           onStarSelect={(id) => setSelectedStarId(id)}
@@ -401,8 +596,6 @@ export default function App() {
             p: 3,
             boxSizing: 'border-box',
             overflowY: 'auto',
-
-            // make all text white by default
             '& .MuiTypography-root': { color: '#fff' },
             '& .MuiFormControlLabel-label': { color: '#fff' },
             '& .MuiSvgIcon-root': { color: '#fff' }
@@ -437,7 +630,7 @@ export default function App() {
               />
               <FormControlLabel
                 control={<Switch checked={isSimRunning} onChange={(e) => setIsSimRunning(e.target.checked)} />}
-                label="Симуляция (орбиты)"
+                label={physicsMode ? 'Симуляция (физика)' : 'Симуляция (орбиты)'}
               />
             </Stack>
           </Paper>
