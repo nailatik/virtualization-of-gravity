@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import type { Star, GraphLink } from './models/Star';
 import { generateInitialGraph } from './utils/generateInitialGraph';
 import StarScene from './components/StarScene';
+import { dijkstraPath } from './utils/dijkstra';
 import { stepNBodyLeapfrog, setCircularOrbitVelocity } from './utils/nbody2d';
 import {
   Box,
@@ -154,6 +155,11 @@ export default function App() {
   const minR0Init = sun0 ? computeMinR(initial.stars, sun0) : 200;
   const orbitCalibRef = useRef<{ minR0: number }>({ minR0: minR0Init });
   const orbitRef = useRef<OrbitState>(buildOrbitState(initial.stars, minR0Init));
+
+
+  const [routeA, setRouteA] = useState<string | null>(null);
+  const [routeB, setRouteB] = useState<string | null>(null);
+  const [route, setRoute] = useState<{ path: string[]; cost: number } | null>(null);
 
   // ---------- tips (random once per minute; close button disables forever) ----------
   const TIPS = useMemo(
@@ -392,6 +398,19 @@ export default function App() {
     }));
   };
 
+  const routeEdgeSet = useMemo(() => {
+    const s = new Set<string>();
+    if (!route?.path || route.path.length < 2) return s;
+    for (let i = 0; i < route.path.length - 1; i++) {
+      const a = route.path[i];
+      const b = route.path[i + 1];
+      // ключ для неориентированного ребра
+      const key = a < b ? `${a}|${b}` : `${b}|${a}`;
+      s.add(key);
+    }
+    return s;
+  }, [route]);
+  
   // ---------- UI styles (white) ----------
   const whiteTextFieldSx = {
     width: 180,
@@ -498,6 +517,31 @@ export default function App() {
           </a>
         </Typography>
       </Paper>
+      {routeA && routeB && route && isFinite(route.cost) && (
+        <Paper
+          sx={{
+            position: 'absolute',
+            left: 12,
+            top: tipText ? 190 : 76, // чтобы не наезжало на подсказку
+            zIndex: 30,
+            maxWidth: 420,
+            bgcolor: 'rgba(15, 23, 42, 0.92)',
+            border: '1px solid rgba(255,255,255,0.12)',
+            color: '#fff',
+            p: 1.5
+          }}
+        >
+          <Typography variant="body2" sx={{ color: '#fff' }}>
+            маршрут: {route.path.join(' → ')}
+          </Typography>
+          <Typography variant="body2" sx={{ color: '#fff', opacity: 0.9 }}>
+            топливо: {route.cost.toFixed(1)}
+          </Typography>
+          <Typography variant="caption" sx={{ color: 'rgba(255,255,255,0.75)' }}>
+            выбери 2 планеты кликами для расчёта кратчайшего пути (dijkstra)
+          </Typography>
+        </Paper>
+      )}
 
       {/* Selected star panel */}
       {selectedStar && (
@@ -575,8 +619,27 @@ export default function App() {
             }
           }}
           onStarMove={handleStarMove}
-          onStarSelect={(id) => setSelectedStarId(id)}
+          onStarSelect={(id) => {
+            setSelectedStarId(id);
+          
+            if (!id) return;
+          
+            // маршрут выбора A->B
+            if (!routeA || (routeA && routeB)) {
+              setRouteA(id);
+              setRouteB(null);
+              setRoute(null);
+              return;
+            }
+          
+            if (routeA && !routeB && id !== routeA) {
+              setRouteB(id);
+              const r = dijkstraPath(graph.stars, graph.links, routeA, id);
+              setRoute(r);
+            }
+          }}          
           selectedStarId={selectedStarId}
+          highlightedEdges={routeEdgeSet}
         />
       </Box>
 

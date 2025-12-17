@@ -158,7 +158,8 @@ export default function StarScene({
   onDragEnd,
   onStarMove,
   onStarSelect,
-  selectedStarId
+  selectedStarId,
+  highlightedEdges,
 }: {
   stars: Star[];
   links: GraphLink[];
@@ -171,6 +172,7 @@ export default function StarScene({
   onStarMove: (id: string, x: number, y: number) => void;
   onStarSelect: (id: string | null) => void;
   selectedStarId: string | null;
+  highlightedEdges?: Set<string>;
 }) {
   const sun = stars.find((s) => s.id === sunId);
 
@@ -230,8 +232,25 @@ export default function StarScene({
             const a = stars.find((n) => n.id === e.source);
             const b = stars.find((n) => n.id === e.target);
             if (!a || !b) return null;
-            return <EdgeLine key={`edge-${idx}`} a={{ x: a.x, y: a.y }} b={{ x: b.x, y: b.y }} />;
+
+            const key = e.source < e.target ? `${e.source}|${e.target}` : `${e.target}|${e.source}`;
+            const hi = highlightedEdges?.has(key);
+
+            return (
+              <Line
+                key={`edge-${idx}`}
+                points={[
+                  [a.x, a.y, 0],
+                  [b.x, b.y, 0]
+                ]}
+                color={hi ? '#60a5fa' : '#6b7280'}
+                transparent
+                opacity={hi ? 0.95 : 0.55}
+                lineWidth={hi ? 3 : 1}
+              />
+            );
           })}
+
 
         {/* Звёзды */}
         {stars.map((s) => (

@@ -12,5 +12,5 @@ export interface Star {
 export interface GraphLink {
   source: string;
   target: string;
-  distance?: number;
+  distance: number;
 }

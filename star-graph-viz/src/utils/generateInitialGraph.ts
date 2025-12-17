@@ -10,11 +10,11 @@ export function generateInitialGraph(): { stars: Star[], links: GraphLink[] } {
   ];
 
   const links: GraphLink[] = [
-    { source: '1', target: '2', distance: 150 },
-    { source: '1', target: '3', distance: 150 },
-    { source: '1', target: '4', distance: 150 },
-    { source: '2', target: '3', distance: 100 },
-    { source: '3', target: '5', distance: 100 },
+    { source: '1', target: '2', distance: 1000 },
+    { source: '1', target: '3', distance: 1565 },
+    { source: '1', target: '4', distance: 17650 },
+    { source: '2', target: '3', distance: 500 },
+    { source: '3', target: '5', distance: 1003455 },
   ];
 
   return { stars, links };
