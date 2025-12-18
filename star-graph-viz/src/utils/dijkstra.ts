@@ -1,25 +1,69 @@
 import type { Star, GraphLink } from '../models/Star';
+import { distPointToSegment } from './geometry2d';
 
 type AdjEdge = { to: string; w: number };
+
+// helper: key для неориентированного ребра (если понадобится где-то ещё)
+export function edgeKey(a: string, b: string) {
+  return a < b ? `${a}|${b}` : `${b}|${a}`;
+}
 
 export function dijkstraPath(
   nodes: Star[],
   links: GraphLink[],
   startId: string,
-  goalId: string
+  goalId: string,
+  opts?: {
+    sunId?: string;
+    sunBlockRadius?: number; // радиус опасной зоны в твоих “пикселях”
+    forbidThroughSun?: boolean; // true = ребро запрещаем, false = даём штраф
+    penalty?: number; // если forbidThroughSun=false
+    power?: number; // топливо = distance^power (1 = линейно)
+  }
 ): { path: string[]; cost: number } {
+  const {
+    sunId = '1',
+    sunBlockRadius = 90,
+    forbidThroughSun = false,
+    penalty = 1e9,
+    power = 1
+  } = opts ?? {};
+
+  const byId = new Map(nodes.map((n) => [n.id, n]));
+  const sun = byId.get(sunId);
+
+  // adjacency list
   const adj = new Map<string, AdjEdge[]>();
   for (const n of nodes) adj.set(n.id, []);
 
+  // build graph once, with dynamic weights
   for (const e of links) {
-    const w = e.distance; // считаем "топливо" = distance
-    if (!adj.has(e.source) || !adj.has(e.target)) continue;
+    const a = byId.get(e.source);
+    const b = byId.get(e.target);
+    if (!a || !b) continue;
+    if (!adj.has(a.id) || !adj.has(b.id)) continue;
 
-    // граф неориентированный (перелёт туда-обратно)
-    adj.get(e.source)!.push({ to: e.target, w });
-    adj.get(e.target)!.push({ to: e.source, w });
+    const d = Math.hypot(a.x - b.x, a.y - b.y);
+    let w = power === 1 ? d : Math.pow(d, power);
+
+    // запрет/штраф “пролёта через солнце”
+    if (sun) {
+      const minDist = distPointToSegment(sun.x, sun.y, a.x, a.y, b.x, b.y);
+      if (minDist < sunBlockRadius) {
+        if (forbidThroughSun) {
+          continue; // ребро не добавляем
+        } else {
+          w += penalty; // ребро есть, но почти всегда невыгодно
+        }
+      }
+    }
+
+    // граф неориентированный (можно “лететь” в обе стороны)
+    adj.get(a.id)!.push({ to: b.id, w });
+    adj.get(b.id)!.push({ to: a.id, w });
   }
 
+  // dijkstra
   const dist = new Map<string, number>();
   const prev = new Map<string, string | null>();
   const used = new Set<string>();
@@ -31,7 +75,6 @@ export function dijkstraPath(
   dist.set(startId, 0);
 
   while (true) {
-    // найти неиспользованную вершину с минимальной дистанцией
     let v: string | null = null;
     let best = Infinity;
     for (const [id, d] of dist) {

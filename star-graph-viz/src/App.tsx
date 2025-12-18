@@ -177,6 +177,25 @@ export default function App() {
   const hideTipTimeoutRef = useRef<number | null>(null);
 
   useEffect(() => {
+    if (!routeA || !routeB) return;
+    if (!isSimRunning) return;
+  
+    const id = window.setInterval(() => {
+      const r = dijkstraPath(graph.stars, graph.links, routeA, routeB, {
+        sunId: SUN_ID,
+        sunBlockRadius: 110,
+        forbidThroughSun: true, // true - через солнце нельзя
+        penalty: 1e6,
+        power: 1
+      });
+      setRoute(r);
+    }, 500); // раз в 0.5 сек
+  
+    return () => window.clearInterval(id);
+  }, [routeA, routeB, isSimRunning, graph.stars, graph.links]);
+  
+
+  useEffect(() => {
     if (tipsDismissed) return;
   
     const showRandomTip = () => {
